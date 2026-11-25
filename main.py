@@ -1,3 +1,5 @@
+import time
+from google.genai import errors
 import os, json, re, subprocess, textwrap, random
 from pathlib import Path
 from datetime import datetime, timezone
@@ -58,9 +60,14 @@ def make_scene(text, index, total, path):
     d.text((100, 1690), f"FOLLOW FOR MORE  •  {index}/{total}", font=get_font(32, True), fill=(160, 180, 215))
     im.save(path, quality=95)
 
+
 def generate_content():
-    api_key = os.environ["GEMINI_API_KEY"]
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY GitHub Secrets mein missing hai.")
+
     client = genai.Client(api_key=api_key)
+
     prompt = """
 Create an original, factual, engaging 45-60 second YouTube Shorts script for a US audience.
 Topic area: lesser-known American history or a verified historical mystery.
@@ -74,15 +81,57 @@ Return ONLY valid JSON with:
 }
 Choose a specific topic and use cautious wording where facts are disputed.
 """
-    response = client.models.generate_content(
-        model="gemini-3.8-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.7)
-    )
-    data = json.loads(response.text)
-    if len(data.get("scenes", [])) != 6:
-        raise ValueError("Model did not return exactly 6 scenes.")
-    return data
+
+    max_attempts = 4
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            print(f"Gemini API attempt {attempt}/{max_attempts}")
+
+            response = client.models.generate_content(
+                model="gemini-3.8-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.7
+                )
+            )
+
+            if not response.text:
+                raise ValueError("Gemini returned an empty response.")
+
+            data = json.loads(response.text)
+
+            if len(data.get("scenes", [])) != 6:
+                raise ValueError("Model did not return exactly 6 scenes.")
+
+            if not data.get("title") or not data.get("description"):
+                raise ValueError("Title or description is missing.")
+
+            print("Gemini content generated successfully.")
+            return data
+
+        except errors.APIError as e:
+            status = getattr(e, "code", None)
+
+            if status not in (429, 500, 502, 503, 504):
+                raise
+
+            if attempt == max_attempts:
+                raise RuntimeError(
+                    "Gemini API is still unavailable after 4 attempts. "
+                    "Please try again later."
+                ) from e
+
+            wait_time = 10 * (2 ** (attempt - 1))
+            print(
+                f"Gemini temporary error {status}. "
+                f"Retrying in {wait_time} seconds..."
+            )
+            time.sleep(wait_time)
+
+    raise RuntimeError("Gemini content generation failed.")
+
 
 def main():
     data = generate_content()

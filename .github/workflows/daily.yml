@@ -1,4 +1,3 @@
-
 name: DarkFiles Daily Automation
 
 on:
@@ -10,10 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  generate:
+  generate-and-upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,12 +29,15 @@ jobs:
       - name: Install packages
         run: pip install -r requirements.txt
 
-      - name: Generate video
+      - name: Generate and upload private test video
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+          YOUTUBE_OAUTH_CLIENT_JSON: ${{ secrets.YOUTUBE_OAUTH_CLIENT_JSON }}
         run: python main.py
 
-      - name: Save video
+      - name: Save video artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: darkfiles-video

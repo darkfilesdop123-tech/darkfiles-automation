@@ -1,5 +1,5 @@
 import time
-import os, json, re, subprocess, urllib.parse, urllib.request
+import os, json, re, html, subprocess, urllib.parse, urllib.request
 from pathlib import Path
 from datetime import datetime, timezone
 from google.genai import errors
@@ -44,7 +44,7 @@ def wrap_lines(draw, text, font, max_width):
         lines.append(line)
     return lines
 
-def commons_image(query, destination):
+def commons_image(query, destination, seen_titles=None):
     """Fetch a relevant freely licensed image from Wikimedia Commons; returns False on failure."""
     try:
         params = {
@@ -54,23 +54,26 @@ def commons_image(query, destination):
             "iiurlwidth": 1200
         }
         url = "https://commons.wikimedia.org/w/api.php?" + urllib.parse.urlencode(params)
-        req = urllib.request.Request(url, headers={"User-Agent": "DarkFilesShortsBot/1.0 (educational video project)"})
+        req = urllib.request.Request(url, headers={"User-Agent": "MysteryLedgerShortsBot/1.0 (educational video project)"})
         with urllib.request.urlopen(req, timeout=25) as response:
             payload = json.loads(response.read().decode("utf-8"))
         pages = list(payload.get("query", {}).get("pages", {}).values())
         for page in pages:
+            page_title = page.get("title", "")
+            if seen_titles is not None and page_title in seen_titles:
+                continue
             info = (page.get("imageinfo") or [{}])[0]
             image_url = info.get("thumburl") or info.get("url")
             if not image_url:
                 continue
-            req = urllib.request.Request(image_url, headers={"User-Agent": "DarkFilesShortsBot/1.0"})
+            req = urllib.request.Request(image_url, headers={"User-Agent": "MysteryLedgerShortsBot/1.0"})
             with urllib.request.urlopen(req, timeout=30) as response:
                 data = response.read()
             if len(data) < 10000:
                 continue
             Path(destination).write_bytes(data)
             meta = info.get("extmetadata", {})
-            artist = re.sub("<[^>]+>", "", meta.get("Artist", {}).get("value", "Unknown"))
+            artist = html.unescape(re.sub("<[^>]+>", "", meta.get("Artist", {}).get("value", "Unknown")))
             license_name = meta.get("LicenseShortName", {}).get("value", "License not listed")
             return {"title": page.get("title", ""), "artist": artist[:250], "license": license_name}
     except Exception as exc:
@@ -96,9 +99,9 @@ def make_scene(photo_path, text, index, total, path):
             d0.line((0, y, W, y), fill=(int(8+10*t), int(13+8*t), int(28+20*t)))
     d = ImageDraw.Draw(im, "RGBA")
     # Gradient-like dark panels behind text.
-    d.rounded_rectangle((55, 105, 1025, 1815), radius=44, fill=(0, 0, 0, 72), outline=(160, 180, 220, 120), width=3)
-    d.text((95, 145), "SHADOWCASE FILES  /  MYSTERY & HISTORY", font=get_font(30, True), fill=(185, 205, 245, 255))
-    d.text((95, 300), f"CASE FILE  {index:02d}", font=get_font(38, True), fill=(255, 198, 100, 255))
+    d.rounded_rectangle((55, 105, 1025, 1815), radius=44, fill=(0, 0, 0, 108), outline=(190, 170, 120, 150), width=3)
+    d.text((95, 145), "MYSTERY LEDGER  /  MYSTERY & HISTORY", font=get_font(30, True), fill=(185, 205, 245, 255))
+    d.text((95, 300), f"CASE FILE  {index:02d}", font=get_font(38, True), fill=(255, 205, 120, 255))
     font = get_font(59, True)
     lines = wrap_lines(d, text, font, 850)
     # Keep the caption compact and centered in the lower-middle area.
@@ -116,19 +119,31 @@ def generate_content():
         raise RuntimeError("GEMINI_API_KEY GitHub Secret is missing.")
     client = genai.Client(api_key=api_key)
     prompt = """
-Create an original, factual, engaging 45-60 second YouTube Short for a US audience.
-Topic area: lesser-known American history or a documented historical mystery.
-Avoid unsolved-crime accusations, graphic content, conspiracy claims, fabricated facts, and fake quotes.
-Return ONLY valid JSON:
+Create an original, factual, high-retention 45-60 second YouTube Short for a US audience.
+Channel: Mystery Ledger. Topic: lesser-known American history or a documented historical mystery.
+STORY RULES:
+- Start immediately with a compelling curiosity gap in the first spoken sentence. No greeting or channel intro.
+- Build one clear question; reveal clues progressively; finish with a satisfying, evidence-based payoff.
+- Use concrete dates, places, people, and objects only when supported by credible historical records.
+- Avoid conspiracy claims, invented details, fake quotes, graphic content, and unsupported accusations.
+- Write six connected narration segments in natural spoken English, roughly 8-18 words each.
+- End with a short, natural invitation to follow Mystery Ledger; avoid a long generic outro.
+VISUAL RULES:
+- Return six DISTINCT, scene-specific Wikimedia Commons search phrases, 3-7 words each.
+- Each query must illustrate its exact narration segment, not merely the overall topic.
+- Vary the visual subjects: archival photographs, historic buildings/locations, artifacts, newspaper pages/documents,
+  portraits, and maps where genuinely relevant.
+- Use no more than TWO map-focused queries in the entire Short. Do not use maps as filler.
+- Prefer concrete nouns and identifiable subjects over vague words such as "mystery" or "history".
+Return ONLY valid JSON with exactly these fields:
 {
- "title":"under 70 characters",
- "description":"2-3 sentences plus relevant hashtags",
- "scenes":["6 short narration segments, each 8-18 words"],
- "visual_queries":["one specific Wikimedia Commons image search phrase per scene, 3-7 words"],
- "sources_to_verify":["2 credible source names or URLs"]
+  "title":"compelling and accurate title under 70 characters",
+  "description":"2-3 factual sentences plus relevant hashtags",
+  "scenes":["six connected narration segments; first is a strong hook; final includes brief follow CTA"],
+  "visual_queries":["six distinct scene-matched Commons search phrases, 3-7 words each"],
+  "sources_to_verify":["two credible source names or URLs for later fact checking"]
 }
-Use real places, objects, archival photographs, buildings, maps, or artifacts as visual ideas.
-Do not invent evidence. Use cautious wording where facts are disputed.
+Do not claim sources have been checked. Do not invent evidence. Use cautious wording where facts are disputed.
 """
     for attempt in range(1, 5):
         try:
@@ -168,9 +183,9 @@ def youtube_upload(video_path, title, description):
     body = {
         "snippet": {
             "title": title[:100],
-            "description": (description + "\n\n#Shorts #ShadowCaseFiles")[:5000],
+            "description": (description + "\n\n#Shorts #MysteryLedger")[:5000],
             "categoryId": "27",
-            "tags": ["ShadowCaseFiles", "American history", "mystery", "history", "Shorts"]
+            "tags": ["Mystery Ledger", "American history", "mystery", "history", "Shorts"]
         },
         "status": {"privacyStatus": "private", "selfDeclaredMadeForKids": False}
     }
@@ -181,7 +196,7 @@ def youtube_upload(video_path, title, description):
         status, response = request.next_chunk()
         if status:
             print(f"YouTube upload progress: {int(status.progress() * 100)}%")
-    print(f"Uploaded PRIVATE test video: https://www.youtube.com/watch?v={response['id']}")
+    print(f"Uploaded PRIVATE Mystery Ledger test video: https://www.youtube.com/watch?v={response['id']}")
     return response["id"]
 
 def main():
@@ -192,16 +207,18 @@ def main():
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "metadata.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
     audio_files, image_files, attribution = [], [], []
+    seen_image_titles = set()
     for i, (scene, visual_query) in enumerate(zip(data["scenes"], data["visual_queries"]), 1):
         audio = folder / f"audio-{i}.mp3"
         gTTS(text=scene, lang="en", tld="com").save(str(audio))
         audio_files.append(audio)
         downloaded = folder / f"source-{i}.jpg"
-        credit = commons_image(visual_query, downloaded)
+        credit = commons_image(visual_query, downloaded, seen_image_titles)
         if not credit:
             # Retry using the story title if a specific scene query has no result.
-            credit = commons_image(data["title"], downloaded)
+            credit = commons_image(visual_query + " " + data["title"], downloaded, seen_image_titles)
         if credit:
+            seen_image_titles.add(credit.get("title", ""))
             attribution.append({"scene": i, **credit})
             photo = downloaded
             print(f"Scene {i}: Wikimedia image found: {credit['title']}")
@@ -224,7 +241,7 @@ def main():
 
     concat_file = folder / "concat.txt"
     concat_file.write_text("".join(f"file '{p.resolve()}'\n" for p in segments), encoding="utf-8")
-    final_video = folder / "shadowcase-short.mp4"
+    final_video = folder / "mystery-ledger-short.mp4"
     run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file),
          "-c", "copy", "-movflags", "+faststart", str(final_video)])
     (folder / "IMAGE-CREDITS.json").write_text(json.dumps(attribution, indent=2), encoding="utf-8")
@@ -235,7 +252,7 @@ def main():
         encoding="utf-8"
     )
     youtube_upload(final_video, data["title"], data["description"])
-    print(f"Created and uploaded private test video: {final_video}")
+    print(f"Created and uploaded PRIVATE Mystery Ledger test video: {final_video}")
 
 if __name__ == "__main__":
     main()
